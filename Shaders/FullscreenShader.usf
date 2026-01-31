@@ -1,0 +1,11 @@
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
+
+float BValue;
+float2 TargetSize;
+
+void FullscreenPS(float4 InPosition : SV_POSITION,	out float4 OutColor : SV_Target0)
+{
+    float2 UV = InPosition.xy / TargetSize; 
+    OutColor = float4(UV.x, UV.y, BValue, 1.0);
+}

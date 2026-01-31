@@ -1,0 +1,136 @@
+// Custom CS PostProcessing Shader
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D OriginalSceneColor;
+Texture2D TVMaskTexture;
+Texture2D ScanLineTexture;
+
+float RetroScaleFactor;
+float LensDistortionK1; 
+float LensDistortionK2; 
+
+float VignetteStart;  
+float VignetteEnd; 
+float VignettePower;   
+float VignetteIntensity;  
+
+float ScanlineSpeed;
+float ScanlineIntensity;
+float ScanlineScale;
+
+SCREEN_PASS_TEXTURE_VIEWPORT(SceneColorViewport)
+
+RWTexture2D<float4> Output;
+
+float CalcaulateLuminance(float3 color)
+{
+    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float GetNoise(float2 p, float offset)
+{
+    return frac(sin(dot(p + offset, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float HDRToLDR(float3 color)
+{
+    float luma = CalcaulateLuminance(color);
+    return luma / (1.0f + luma); 
+}
+
+float4 CalculateColorGrain(float3 hdrColor, float2 uv)
+{
+    float lumaLDR = HDRToLDR(hdrColor);
+    
+    float2 seed = uv + View.StateFrameIndexMod8; 
+    
+    float3 noise;
+    noise.r = GetNoise(seed , 0.1337);       
+    noise.g = GetNoise(seed , 0.4242);    
+    noise.b = GetNoise(seed , 0.5342);   
+
+    float strength = 1.0 - pow(abs(lumaLDR - 0.5) * 2.0, 2.0);
+
+    float3 grain = (noise - 0.5f) * strength * lumaLDR; 
+    
+    return float4(grain, 1.0f);
+}
+
+float2 CalculateDistortedUV(float2 screenCoord, float viewAspect)
+{
+    float2 p = screenCoord;
+    p.x *= viewAspect;
+
+    float r2 = dot(p, p);
+    float scale = 1.0f + LensDistortionK1 * r2 + LensDistortionK2 * (r2 * r2);
+    float2 distortedP = p * scale;
+    distortedP.x /= viewAspect;
+
+    float2 distortedUV = (distortedP + 1.0f) * 0.5f;
+    return distortedUV;
+}
+
+float4 CalculateDistortedColor(float2 distortedUV, float viewAspect)
+{
+    float2 uvMin = float2(SceneColorViewport_ViewportMin) * SceneColorViewport_ExtentInverse + SceneColorViewport_ExtentInverse;
+    float2 uvMax = float2(SceneColorViewport_ViewportMin + SceneColorViewport_ViewportSize) * SceneColorViewport_ExtentInverse - SceneColorViewport_ExtentInverse;
+
+    bool outside = any(distortedUV < uvMin) || any(distortedUV > uvMax);
+
+    float2 safeUV = clamp(distortedUV, uvMin, uvMax);
+    float4 distortedColor = OriginalSceneColor.SampleLevel(GlobalBilinearClampedSampler, safeUV, 0);
+    if (outside) distortedColor = float4(0,0,0,1);
+
+    return distortedColor;
+}
+
+float CalculateVignette(float2 distortedUV)
+{
+    float2 centeredUV = distortedUV * 2.0f - 1.0f;
+    float dist = length(centeredUV);
+
+    float vignette = smoothstep(VignetteStart, VignetteEnd, dist);
+    vignette = pow(1.0 - vignette, VignettePower);
+    vignette = lerp(1.0f, vignette, VignetteIntensity);
+    
+    return vignette;
+}
+
+float CalculateScanline(float2 uv)
+{
+    uv *= ScanlineScale;
+
+    uv.y += View.RealTime * ScanlineSpeed;
+
+    float scanline = ScanLineTexture.SampleLevel(GlobalBilinearWrappedSampler,uv,0).r;
+
+    return 1.0f - scanline * ScanlineIntensity;
+}
+
+
+[numthreads(8, 8, 1)]
+void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(DispatchThreadId >= SceneColorViewport_ViewportSize)) return;
+
+    float2 sampleUV = (float2(SceneColorViewport_ViewportMin) + (float2(DispatchThreadId) + 0.5f)) * SceneColorViewport_ExtentInverse;
+    float2 screenCoord = sampleUV * 2.0f - 1.0f;
+    screenCoord *= RetroScaleFactor;
+
+    float viewAspect = (float)SceneColorViewport_ViewportSize.x / (float)SceneColorViewport_ViewportSize.y;
+    
+    float2 distortedUV = CalculateDistortedUV(screenCoord, viewAspect);
+
+    float4 distortedColor = CalculateDistortedColor(distortedUV, viewAspect);
+    float luminance = CalcaulateLuminance(distortedColor.rgb);
+    float4 grain = CalculateColorGrain(luminance, distortedUV * SceneColorViewport_ViewportSize);
+
+    float vignette = CalculateVignette(distortedUV);
+    float scanline = CalculateScanline(sampleUV);
+    float4 tvMaskColor = TVMaskTexture.SampleLevel(GlobalBilinearClampedSampler, sampleUV, 0);
+
+    Output[SceneColorViewport_ViewportMin + DispatchThreadId] = (distortedColor + grain) * tvMaskColor * vignette * scanline;
+}

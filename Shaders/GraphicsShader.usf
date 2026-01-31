@@ -1,0 +1,34 @@
+#include "/Engine/Public/Platform.ush"
+
+struct VS_INPUT
+{
+    float2 Position : ATTRIBUTE0;
+    float2 TexCoord : ATTRIBUTE1;
+};
+
+struct VS_OUTPUT
+{
+    float4 Position : SV_POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
+void MainVS(
+    in VS_INPUT Input,
+    out VS_OUTPUT Output
+)
+{
+    Output.Position = float4(Input.Position, 0.0, 1.0);
+    Output.TexCoord = Input.TexCoord;
+}
+
+float BValue; 
+
+void MainPS(
+    in VS_OUTPUT PS_Input,
+    out float4 OutColor : SV_Target0
+)
+{
+    OutColor = float4(PS_Input.TexCoord.x, PS_Input.TexCoord.y, BValue, 1.0);
+    // OutColor = float4(1.0, 1.0, 1.0, 1.0);
+}
+
